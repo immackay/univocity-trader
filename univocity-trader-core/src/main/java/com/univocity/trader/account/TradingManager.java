@@ -24,18 +24,18 @@ public class TradingManager {
 	final String fundSymbol;
 	private final AccountManager tradingAccount;
 	protected Trader trader;
-	private Exchange<?> api;
-	private final OrderEventListener[] notifications;
+	private Exchange<?> exchange;
+	private final OrderListener[] notifications;
 	protected Client client;
 	private OrderExecutionToEmail emailNotifier;
 	private final SymbolPriceDetails priceDetails;
 
-	public TradingManager(Exchange api, SymbolPriceDetails priceDetails, AccountManager account, InstancesProvider<OrderEventListener> listenerProvider, String assetSymbol, String fundSymbol, Parameters params) {
-		if (api == null) {
-			throw new IllegalArgumentException("Exchange API implementation cannot be null");
+	public TradingManager(Exchange exchange, SymbolPriceDetails priceDetails, AccountManager account, InstancesProvider<OrderListener> listenerProvider, String assetSymbol, String fundSymbol, Parameters params) {
+		if (exchange == null) {
+			throw new IllegalArgumentException("Exchange implementation cannot be null");
 		}
 		if (priceDetails == null) {
-			priceDetails = new SymbolPriceDetails(api);
+			priceDetails = new SymbolPriceDetails(exchange);
 		}
 		if (account == null) {
 			throw new IllegalArgumentException("Account manager cannot be null");
@@ -46,14 +46,14 @@ public class TradingManager {
 		if (StringUtils.isBlank(fundSymbol)) {
 			throw new IllegalArgumentException("Currency cannot be blank (examples: 'USD', 'EUR', 'USDT', 'ETH')");
 		}
-		this.api = api;
+		this.exchange = exchange;
 		this.tradingAccount = account;
 		this.assetSymbol = assetSymbol;
 		this.fundSymbol = fundSymbol;
 		this.symbol = assetSymbol + fundSymbol;
 		this.priceDetails = priceDetails.switchToSymbol(symbol);
 
-		this.notifications = listenerProvider != null ? listenerProvider.create(symbol, params) : new OrderEventListener[0];
+		this.notifications = listenerProvider != null ? listenerProvider.create(symbol, params) : new OrderListener[0];
 		this.emailNotifier = getEmailNotifier();
 		account.register(this);
 	}
@@ -83,7 +83,7 @@ public class TradingManager {
 		if (lastCandle != null && (System.currentTimeMillis() - lastCandle.closeTime) < FIFTEEN_SECONDS) {
 			return lastCandle.close;
 		}
-		return api.getLatestPrice(assetSymbol, fundSymbol);
+		return exchange.getLatestPrice(assetSymbol, fundSymbol);
 	}
 
 	public String getSymbol() {
@@ -91,7 +91,7 @@ public class TradingManager {
 	}
 
 	public Map<String, Double> getAllPrices() {
-		return api.getLatestPrices();
+		return exchange.getLatestPrices();
 	}
 
 	public boolean hasAssets(Candle c) {
@@ -110,6 +110,7 @@ public class TradingManager {
 		}
 		return false;
 	}
+
 
 //	public boolean switchTo(String ticker, Signal trade, String exitSymbol) {
 //		String targetSymbol = exitSymbol + fundSymbol;
@@ -199,8 +200,8 @@ public class TradingManager {
 		return tradingAccount;
 	}
 
-	public void cancelStaleOrders() {
-		tradingAccount.cancelStaleOrders();
+	public void cancelStaleOrdersFor(Trader trader) {
+		tradingAccount.cancelStaleOrdersFor(trader);
 	}
 
 	public TradingFees getTradingFees() {
@@ -230,14 +231,32 @@ public class TradingManager {
 	void notifyTradeExecution(Order order) {
 		for (int i = 0; i < notifications.length; i++) {
 			try {
-				notifications[i].onOrderUpdate(order, trader, client);
+				notifications[i].onOrder(order, trader, client);
 			} catch (Exception e) {
 				log.error("Error executing update notification on order: " + order, e);
 			}
 		}
 	}
 
+	void notifySimulationEnd() {
+		for (int i = 0; i < notifications.length; i++) {
+			try {
+				notifications[i].onSimulationEnd(trader, client);
+			} catch (Exception e) {
+				log.error("Error executing simulation end callback", e);
+			}
+		}
+	}
+
+	public void updateOpenOrders(String symbol, Candle candle) {
+		if (tradingAccount.isSimulated()) {
+			if (tradingAccount.updateOpenOrders(symbol, candle)) {
+				tradingAccount.updateOrderStatuses(trader.getSymbol());
+			}
+		}
+	}
+
 //	boolean isDirectSwitchSupported(String currentAssetSymbol, String targetAssetSymbol) {
-//		return api.isDirectSwitchSupported(currentAssetSymbol, targetAssetSymbol);
+//		return exchange.isDirectSwitchSupported(currentAssetSymbol, targetAssetSymbol);
 //	}
 }

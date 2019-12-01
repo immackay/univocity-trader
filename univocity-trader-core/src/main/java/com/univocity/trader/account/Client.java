@@ -17,35 +17,35 @@ public class Client<T> extends DefaultConfiguration {
 	private final String email;
 	private final ZoneId timezone;
 
-	private Exchange api;
+	private Exchange exchange;
 	private TradingManager root;
-	private ClientAccount clientAccountApi;
+	private ClientAccount account;
 
 	private final List<CandleProcessor<T>> candleProcessors = new ArrayList<>();
 
 
-	public Client(String email, ZoneId timezone, String referenceCurrencySymbol, ClientAccount clientAccountApi) {
+	public Client(String email, ZoneId timezone, String referenceCurrencySymbol, ClientAccount account) {
 		super(referenceCurrencySymbol);
 		this.email = email;
 		this.timezone = timezone;
-		this.clientAccountApi = clientAccountApi;
+		this.account = account;
 	}
 
 	@Override
 	protected AccountManager createAccount() {
-		return new AccountManager(getReferenceCurrency(), clientAccountApi);
+		return new AccountManager(getReferenceCurrency(), account);
 	}
 
 	public AccountConfiguration account() {
 		return getAccount();
 	}
 
-	public void initialize(Exchange<T> api, SmtpMailSender mailSender) {
-		this.api = api;
+	public void initialize(Exchange<T> exchange, SmtpMailSender mailSender) {
+		this.exchange = exchange;
 		if (symbolPairs.isEmpty()) {
 			throw new IllegalStateException("No trade symbols defined for client " + email);
 		}
-		final SymbolPriceDetails priceDetails = new SymbolPriceDetails(api); //loads price information from exchange
+		final SymbolPriceDetails priceDetails = new SymbolPriceDetails(exchange); //loads price information from exchange
 
 		Set<TradingManager> all = new HashSet<>();
 
@@ -53,21 +53,23 @@ public class Client<T> extends DefaultConfiguration {
 			this.listeners().add(new OrderExecutionToEmail(mailSender));
 		}
 
+		Set<Object> allInstances = new HashSet<>();
 		for (Map.Entry<String, String[]> e : symbolPairs.entrySet()) {
 			String assetSymbol = e.getValue()[0];
 			String fundSymbol = e.getValue()[1];
 
-			TradingManager tradingManager = new TradingManager(api, priceDetails, getAccount(), listeners, assetSymbol, fundSymbol, Parameters.NULL);
+			TradingManager tradingManager = new TradingManager(exchange, priceDetails, getAccount(), listeners, assetSymbol, fundSymbol, Parameters.NULL);
 			if (root == null) {
 				root = tradingManager;
 			}
 			all.add(tradingManager);
 
-			Engine engine = new Engine(tradingManager, strategies, monitors);
+			Engine engine = new Engine(tradingManager, strategies, monitors, allInstances);
 
-			CandleProcessor<T> processor = new CandleProcessor<T>(engine, api);
+			CandleProcessor<T> processor = new CandleProcessor<T>(engine, exchange);
 			candleProcessors.add(processor);
 		}
+		allInstances.clear();
 
 		for (TradingManager a : all) {
 			a.client = this;

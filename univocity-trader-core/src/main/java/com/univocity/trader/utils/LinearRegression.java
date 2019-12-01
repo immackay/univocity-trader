@@ -15,10 +15,18 @@ public class LinearRegression {
 		this.add(y, true);
 	}
 
+	public void accumulate(double y, boolean updating) {
+		if (updating) {
+			this.update(y);
+		} else {
+			this.add(y);
+		}
+	}
+
 	private void add(double y, boolean updating) {
 		last = y;
 
-		if(updating && count > 2) {
+		if (updating && count > 2) {
 			double dx = count - meanX;
 			double dy = y - meanY;
 			double t = ((count - 1.0) / count) * dx;
@@ -70,5 +78,26 @@ public class LinearRegression {
 
 	public double last() {
 		return last;
+	}
+
+	public boolean goingDown() {
+		return goingDown(100.0);
+	}
+
+	public boolean goingDown(double factor) {
+		return predict(1) < last * (1.0 - (factor / 100.0));
+	}
+
+	public boolean goingUp() {
+		return goingUp(100.0);
+	}
+
+	public boolean goingUp(double factor) {
+		return predict(1) > last * (1.0 + (factor / 100.0));
+	}
+
+	public void clear() {
+		last = meanX = meanY = varX = covXY = slope = intercept = umeanX = umeanY = uvarX = ucovXY = 0.0;
+		count = 0;
 	}
 }

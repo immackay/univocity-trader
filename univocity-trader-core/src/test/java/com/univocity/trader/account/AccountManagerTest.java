@@ -14,12 +14,12 @@ public class AccountManagerTest {
 	private AccountManager account = getAccountManager();
 
 	private AccountManager getAccountManager() {
-		SimulatedClientAccount api = new SimulatedClientAccount("USDT", SimpleTradingFees.percentage(0.1));
-		AccountManager account = api.getAccount();
+		SimulatedClientAccount clientAccount = new SimulatedClientAccount("USDT", SimpleTradingFees.percentage(0.1));
+		AccountManager account = clientAccount.getAccount();
 		account.setTradedPairs(Collections.singletonList(new String[]{"ADA", "USDT"}));
 
 		TradingManager m = new TradingManager(new SimulatedExchange(account), null, account, null, "ADA", "USDT", Parameters.NULL);
-		Trader trader = new Trader(m, null, null);
+		Trader trader = new Trader(m, null, null, new HashSet<>());
 		trader.trade(new Candle(1, 2, 0.04371, 0.4380, 0.4369, 0.4379, 100.0), Signal.NEUTRAL, null);
 
 		return account;

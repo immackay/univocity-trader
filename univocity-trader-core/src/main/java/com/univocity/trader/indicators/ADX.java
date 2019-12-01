@@ -9,7 +9,6 @@ import com.univocity.trader.strategy.*;
  * @author uniVocity Software Pty Ltd - <a href="mailto:dev@univocity.com">dev@univocity.com</a>
  */
 public class ADX extends SingleValueIndicator {
-	private static final double[] instants = Indicator.populateInstants(13);
 	private final PlusDIIndicator plusDIIndicator;
 	private final MinusDIIndicator minusDIIndicator;
 	private final ModifiedMovingAverage adx;
@@ -36,8 +35,8 @@ public class ADX extends SingleValueIndicator {
 
 	@Override
 	protected boolean process(Candle candle, double value, boolean updating) {
-		plusDIIndicator.update(candle);
-		minusDIIndicator.update(candle);
+		plusDIIndicator.accumulate(candle);
+		minusDIIndicator.accumulate(candle);
 
 		double pdi = plusDIIndicator.getValue();
 		double mdi = minusDIIndicator.getValue();

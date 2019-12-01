@@ -2,6 +2,7 @@ package com.univocity.trader.candles;
 
 import com.univocity.trader.*;
 import com.univocity.trader.indicators.base.*;
+import org.apache.commons.lang3.*;
 import org.slf4j.*;
 import org.springframework.jdbc.core.*;
 import org.springframework.jdbc.datasource.*;
@@ -11,6 +12,7 @@ import java.sql.*;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.*;
 
 import static com.univocity.trader.candles.Candle.*;
 
@@ -31,17 +33,18 @@ public class CandleRepository {
 		return out;
 	};
 
-	private static DataSource dataSource;
-	private static JdbcTemplate db;
+	private static Supplier<DataSource> dataSource = CandleRepository::defaultDataSource;
+	private static final ThreadLocal<JdbcTemplate> db = ThreadLocal.withInitial(() -> new JdbcTemplate(getDataSource()));
 
 	public static DataSource getDataSource() {
-		if (dataSource == null) {
-			dataSource = defaultDataSource();
-		}
-		return dataSource;
+		return dataSource.get();
 	}
 
 	public static void setDataSource(DataSource dataSource) {
+		setDataSource(() -> dataSource);
+	}
+
+	public static void setDataSource(Supplier<DataSource> dataSource) {
 		CandleRepository.dataSource = dataSource;
 	}
 
@@ -53,22 +56,18 @@ public class CandleRepository {
 		}
 
 		SingleConnectionDataSource ds = new SingleConnectionDataSource();
-		ds.setUrl("jdbc:mysql://localhost:3306/trading?autoReconnect=true&useUnicode=true&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=false&serverTimezone=UTC&zeroDateTimeBehavior=convertToNull");
+		ds.setUrl("jdbc:mysql://localhost:3306/trading?autoReconnect=true&useUnicode=true&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=false&serverTimezone=UTC&zeroDateTimeBehavior=convertToNull&useSSL=false");
 		ds.setUsername("root");
-
 		ds.setSuppressClose(true);
 		return ds;
 	}
 
-	public static final JdbcTemplate db() {
-		if (db == null) {
-			db = new JdbcTemplate(getDataSource());
-		}
-		return db;
+	public static JdbcTemplate db() {
+		return db.get();
 	}
 
 
-	private static final String buildCandleQuery(String symbol) {
+	private static String buildCandleQuery(String symbol) {
 		return "SELECT open_time, close_time, open, high, low, close, volume FROM candle WHERE symbol = '" + symbol + "'";
 	}
 
@@ -192,22 +191,26 @@ public class CandleRepository {
 		}
 	}
 
-	private static String narrowQueryToTimeInterval(String query, Instant from, Instant to) {
+	public static String narrowQueryToTimeInterval(String query, Long from, Long to) {
 		if (from != null || to != null) {
 			query += " AND ";
 
 			if (from != null) {
-				query += "open_time >= " + from.toEpochMilli();
+				query += "open_time >= " + from;
 			}
 
 			if (to != null) {
 				if (from != null) {
 					query += " AND ";
 				}
-				query += "close_time <= " + to.toEpochMilli();
+				query += "close_time <= " + to;
 			}
 		}
 		return query;
+	}
+
+	public static String narrowQueryToTimeInterval(String query, Instant from, Instant to) {
+		return narrowQueryToTimeInterval(query, from == null ? null : from.toEpochMilli(), to == null ? null : to.toEpochMilli());
 	}
 
 	public static Enumeration<Candle> iterate(String symbol, Instant from, Instant to, boolean cache) {
@@ -264,12 +267,12 @@ public class CandleRepository {
 		return executeQuery(symbol, query, out);
 	}
 
-	public static <T> void fillHistoryGaps(Exchange<T> api, String symbol, Instant from, TimeInterval minGap) {
+	public static <T> void fillHistoryGaps(Exchange<T> exchange, String symbol, Instant from, TimeInterval minGap) {
 		log.info("Looking for gaps in history of {} from {}", symbol, getFormattedDateTimeWithYear(from.toEpochMilli()));
 
-		List<T> ticks = api.getLatestTicks(symbol, minGap);
+		List<T> ticks = exchange.getLatestTicks(symbol, minGap);
 		for (T tick : ticks) {
-			PreciseCandle candle = api.generatePreciseCandle(tick);
+			PreciseCandle candle = exchange.generatePreciseCandle(tick);
 			addToHistory(symbol, candle, true);
 		}
 
@@ -317,7 +320,6 @@ public class CandleRepository {
 //				gaps = gaps.subList(gaps.size() - 30, gaps.size());
 //			}
 			log.info("Filling {} gaps in history of {}", gaps.size(), symbol);
-			boolean settingsModified = false;
 
 			Collections.reverse(gaps);
 
@@ -331,22 +333,22 @@ public class CandleRepository {
 					return;
 				}
 
-//				if (settings.isIntervalIgnored(start, end)) {
-//					continue;
-//				}
+				if (isKnownGap(symbol, start, end)) {
+					noDataCount++;
+					continue;
+				}
 				try {
-					ticks = api.getHistoricalTicks(symbol.toUpperCase(), minGap, start, end);
+					ticks = exchange.getHistoricalTicks(symbol.toUpperCase(), minGap, start, end);
 					if (ticks.size() <= 2) {
 						noDataCount++;
-						log.info("No Candles found for {} between {} and {}", symbol, getFormattedDateTimeWithYear(start), getFormattedDateTimeWithYear(end));
-//						log.warn("Found a historical gap between {} and {}. Interval blacklisted.", getFormattedDateTimeWithYear(start), getFormattedDateTimeWithYear(end));
-//						settings.addIntervalToIgnore(start, end);
-//						settingsModified = true;
+//						log.info("No Candles found for {} between {} and {}", symbol, getFormattedDateTimeWithYear(start), getFormattedDateTimeWithYear(end));
+						log.warn("Found a historical gap between {} and {}. Interval blacklisted.", getFormattedDateTimeWithYear(start), getFormattedDateTimeWithYear(end));
+						addGap(symbol, start, end);
 					} else {
 						log.info("Loaded {} {} Candles between {} and {}", ticks.size(), symbol, getFormattedDateTimeWithYear(start), getFormattedDateTimeWithYear(end));
 						noDataCount = 0;
 						for (T tick : ticks) {
-							PreciseCandle candle = api.generatePreciseCandle(tick);
+							PreciseCandle candle = exchange.generatePreciseCandle(tick);
 							addToHistory(symbol, candle, true);
 						}
 					}
@@ -359,14 +361,35 @@ public class CandleRepository {
 		}
 	}
 
+	private static long count(String query, Object... params) {
+		Long result = db().queryForObject(query, params, Long.class);
+		if (result == null) {
+			return 0;
+		}
+		return result;
+	}
+
+	private static boolean isKnownGap(String symbol, long start, long end) {
+		return count("SELECT COUNT(*) FROM gap WHERE symbol = ? AND open_time = ? AND close_time = ?", symbol.toUpperCase(), start, end) > 0;
+	}
+
+	private static void addGap(String symbol, long start, long end) {
+		try {
+			db().update("INSERT INTO gap VALUES (?,?,?)", symbol.toUpperCase(), start, end);
+		} catch (Exception e) {
+			log.error("Error persisting gap details: " + StringUtils.join(symbol, start, end), e);
+		}
+	}
+
+
 	public static Set<String> getKnownSymbols() {
 		return new TreeSet<>(db().queryForList("SELECT DISTINCT symbol FROM candle", String.class));
 	}
 
 	public static long countCandles(String symbol, Instant from, Instant to) {
-		String query = "SELECT COUNT(*) FROM candle WHERE symbol = '" + symbol + "'";
+		String query = "SELECT COUNT(*) FROM candle WHERE symbol = ?";
 		query = narrowQueryToTimeInterval(query, from, to);
-		return db().queryForObject(query, Long.class);
+		return count(query, symbol);
 	}
 
 	public static long countCandles(String symbol) {
@@ -378,5 +401,6 @@ public class CandleRepository {
 		query += " ORDER BY close_time DESC LIMIT 1";
 		return db().queryForObject(query, CANDLE_MAPPER);
 	}
+
 
 }

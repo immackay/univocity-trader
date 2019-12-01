@@ -45,12 +45,12 @@ public class Trader {
 
 	private final boolean allowMixedStrategies;
 
-	public Trader(TradingManager tradingManager, InstancesProvider<StrategyMonitor> monitors, Parameters params) {
+	public Trader(TradingManager tradingManager, InstancesProvider<StrategyMonitor> monitors, Parameters params, Set<Object> allInstances) {
 		this.parameters = params;
 		this.tradingManager = tradingManager;
 		this.tradingManager.trader = this;
 
-		this.monitors = monitors == null ? new StrategyMonitor[0] : getInstances(tradingManager.getSymbol(), parameters, monitors, "StrategyMonitor", false);
+		this.monitors = monitors == null ? new StrategyMonitor[0] : getInstances(tradingManager.getSymbol(), parameters, monitors, "StrategyMonitor", false, allInstances);
 		boolean allowMixedStrategies = true;
 		for (int i = 0; i < this.monitors.length; i++) {
 			this.monitors[i].setTrader(this);
@@ -169,7 +169,7 @@ public class Trader {
 		}
 
 		if (tradingManager.waitingForBuyOrderToFill()) {
-			tradingManager.cancelStaleOrders();
+			tradingManager.cancelStaleOrdersFor(this);
 			if (tradingManager.waitingForBuyOrderToFill()) {
 				log.debug("Discarding buy of {} @ {}: got buy order waiting to be filled", tradingManager.getSymbol(), candle.close);
 				return false;
@@ -184,7 +184,7 @@ public class Trader {
 		double amountToSpend = tradingManager.allocateFunds();
 		final double minimum = getPriceDetails().getMinimumOrderAmount(candle.close);
 		if (amountToSpend * candle.close <= minimum) {
-			tradingManager.cancelStaleOrders();
+			tradingManager.cancelStaleOrdersFor(this);
 			amountToSpend = tradingManager.allocateFunds() / candle.close;
 			if (amountToSpend * candle.close <= minimum) {
 				if (tradingManager.exitExistingPositions(tradingManager.assetSymbol, candle)) {
@@ -323,6 +323,10 @@ public class Trader {
 
 	public double getBoughtPrice() {
 		return boughtPrice;
+	}
+
+	public void notifySimulationEnd() {
+		tradingManager.notifySimulationEnd();
 	}
 
 	void notifyTrade(Candle c, Order response) {

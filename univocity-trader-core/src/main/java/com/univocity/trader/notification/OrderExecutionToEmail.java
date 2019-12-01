@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.*;
 import static com.univocity.trader.account.Balance.*;
 
 
-public class OrderExecutionToEmail implements OrderEventListener {
+public class OrderExecutionToEmail implements OrderListener {
 
 	private static final Logger log = LoggerFactory.getLogger(NotificationHandler.class);
 
@@ -69,7 +69,7 @@ public class OrderExecutionToEmail implements OrderEventListener {
 	}
 
 	@Override
-	public void onOrderUpdate(Order order, Trader trader, Client client) {
+	public void onOrder(Order order, Trader trader, Client client) {
 		if (mailSender == null) {
 			return;
 		}
@@ -135,7 +135,7 @@ public class OrderExecutionToEmail implements OrderEventListener {
 
 		Balance instrument = balances.getOrDefault(next.getAssetSymbol(), ZERO);
 
-		double assets = instrument.getFree().doubleValue();
+		double assets = instrument.getFreeAmount();
 		double locked = instrument.getLocked().doubleValue();
 
 		if (assets != 0 || locked != 0) {

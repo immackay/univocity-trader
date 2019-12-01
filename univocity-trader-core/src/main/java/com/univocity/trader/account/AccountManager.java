@@ -1,6 +1,7 @@
 package com.univocity.trader.account;
 
 import com.univocity.trader.*;
+import com.univocity.trader.candles.*;
 import com.univocity.trader.simulation.*;
 import org.slf4j.*;
 
@@ -30,13 +31,13 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 	private long lastBalanceSync = 0L;
 	private final Map<String, Balance> balances = new ConcurrentHashMap<>();
 
-	private final ClientAccount accountApi;
+	private final ClientAccount account;
 	private final Map<String, TradingManager> allTradingManagers = new ConcurrentHashMap<>();
 	private String referenceCurrencySymbol;
 	private final Map<String, OrderManager> orderManagers = new ConcurrentHashMap<>();
 
-	public AccountManager(String referenceCurrencySymbol, ClientAccount accountApi) {
-		this.accountApi = accountApi;
+	public AccountManager(String referenceCurrencySymbol, ClientAccount account) {
+		this.account = account;
 		this.referenceCurrencySymbol = referenceCurrencySymbol;
 	}
 
@@ -60,7 +61,7 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 
 	@Override
 	public double getAmount(String symbol) {
-		return balances.getOrDefault(symbol, Balance.ZERO).getFree().doubleValue();
+		return balances.getOrDefault(symbol, Balance.ZERO).getFreeAmount();
 	}
 
 	@Override
@@ -253,7 +254,7 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 	@Override
 	public synchronized String toString() {
 		StringBuilder out = new StringBuilder();
-		Map<String, Balance> positions = accountApi.updateBalances();
+		Map<String, Balance> positions = account.updateBalances();
 		positions.entrySet().stream()
 				.filter((e) -> e.getValue().getTotal().doubleValue() > 0.00001)
 				.forEach((e) -> out
@@ -272,7 +273,7 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 			return balances;
 		}
 
-		Map<String, Balance> updatedBalances = accountApi.updateBalances();
+		Map<String, Balance> updatedBalances = account.updateBalances();
 		if (updatedBalances != null && updatedBalances != balances) {
 			updatedBalances.keySet().retainAll(supportedSymbols);
 			this.balances.clear();
@@ -332,7 +333,7 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 	@Override
 	public Order executeOrder(OrderRequest orderDetails) {
 		if (orderDetails != null) {
-			Order order = accountApi.executeOrder(orderDetails);
+			Order order = account.executeOrder(orderDetails);
 			if (order != null) {
 				switch (order.getStatus()) {
 					case NEW:
@@ -341,9 +342,11 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 						waitForFill(order);
 					case FILLED:
 						logOrderStatus("Completed order. ", order);
+						orderFinalized(null, order);
 						return order;
 					case CANCELLED:
 						logOrderStatus("Could not create order. ", order);
+						orderFinalized(null, order);
 						return null;
 				}
 			}
@@ -362,7 +365,7 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 		orderPreparation.setPrice(priceDetails.priceToBigDecimal(tradingManager.getLatestPrice()));
 		orderPreparation.setQuantity(priceDetails.adjustQuantityScale(quantity));
 
-		OrderBook book = accountApi.getOrderBook(tradingManager.getSymbol(), 0);
+		OrderBook book = account.getOrderBook(tradingManager.getSymbol(), 0);
 
 		OrderManager orderCreator = orderManagers.getOrDefault(tradingManager.getSymbol(), DEFAULT_ORDER_MANAGER);
 		if (orderCreator != null) {
@@ -415,7 +418,7 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 
 	@Override
 	public TradingFees getTradingFees() {
-		return accountApi.getTradingFees();
+		return account.getTradingFees();
 	}
 
 	public AccountConfiguration setOrderManager(OrderManager orderCreator, String... symbols) {
@@ -430,12 +433,12 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 
 	@Override
 	public Order updateOrderStatus(Order order) {
-		return accountApi.updateOrderStatus(order);
+		return account.updateOrderStatus(order);
 	}
 
 	@Override
 	public void cancel(Order order) {
-		accountApi.cancel(order);
+		account.cancel(order);
 	}
 
 	private static void logOrderStatus(String msg, Order order) {
@@ -459,45 +462,29 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 		}
 	}
 
-	private void waitForFill(Order o) {
-		pendingOrders.put(o.getOrderId(), o);
+	@Override
+	public boolean isSimulated() {
+		return account.isSimulated();
+	}
+
+	private void waitForFill(Order order) {
+		pendingOrders.put(order.getOrderId(), order);
+		if (isSimulated()) {
+			return;
+		}
 		new Thread(() -> {
-			Order order = o;
+			Thread.currentThread().setName("Order " + order.getOrderId() + " monitor:" + order.getSide() + " " + order.getSymbol());
+			OrderManager orderManager = orderManagers.getOrDefault(order.getSymbol(), DEFAULT_ORDER_MANAGER);
 			while (true) {
 				try {
-					OrderManager orderManager = orderManagers.getOrDefault(order.getSymbol(), DEFAULT_ORDER_MANAGER);
 					try {
 						Thread.sleep(orderManager.getOrderUpdateFrequency().ms);
 					} catch (InterruptedException e) {
 						Thread.currentThread().interrupt();
 					}
-
-					Order old = order;
-					order = accountApi.updateOrderStatus(order);
-
-					Order.Status s = order.getStatus();
-					if (s == FILLED || s == CANCELLED) {
-						logOrderStatus("", order);
-						pendingOrders.remove(order.getOrderId());
-						updateBalances();
-						orderManager.finalized(order);
+					Order updated = updateOrder(order);
+					if (updated.isFinalized()) {
 						return;
-					} else { // update order status
-						pendingOrders.put(order.getOrderId(), order);
-					}
-
-					if (s == PARTIALLY_FILLED && old.getExecutedQuantity().compareTo(order.getExecutedQuantity()) != 0) {
-						logOrderStatus("", order);
-						updateBalances();
-						orderManager.updated(order);
-					} else {
-						logOrderStatus("Unchanged ", order);
-						orderManager.unchanged(order);
-					}
-
-					//order manager could have cancelled the order
-					if (order.getStatus() == CANCELLED) {
-						cancelOrder(orderManager, order);
 					}
 				} catch (Exception e) {
 					log.error("Error tracking state of order " + order, e);
@@ -507,9 +494,46 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 		}).start();
 	}
 
+	public Order updateOrder(Order order) {
+		OrderManager orderManager = orderManagers.getOrDefault(order.getSymbol(), DEFAULT_ORDER_MANAGER);
+		Order old = order;
+		order = account.updateOrderStatus(order);
+
+		Order.Status s = order.getStatus();
+		if (order.isFinalized()) {
+			logOrderStatus("", order);
+			pendingOrders.remove(order.getOrderId());
+			orderFinalized(orderManager, order);
+			return order;
+		} else { // update order status
+			pendingOrders.put(order.getOrderId(), order);
+		}
+
+		if (s == PARTIALLY_FILLED && old.getExecutedQuantity().compareTo(order.getExecutedQuantity()) != 0) {
+			logOrderStatus("", order);
+			updateBalances();
+			orderManager.updated(order);
+		} else {
+			logOrderStatus("Unchanged ", order);
+			orderManager.unchanged(order);
+		}
+
+		//order manager could have cancelled the order
+		if (order.getStatus() == CANCELLED) {
+			cancelOrder(orderManager, order);
+		}
+		return order;
+	}
+
+	private void orderFinalized(OrderManager orderManager, Order order) {
+		orderManager = orderManager == null ? orderManagers.getOrDefault(order.getSymbol(), DEFAULT_ORDER_MANAGER) : orderManager;
+		updateBalances();
+		orderManager.finalized(order);
+	}
+
 	private void cancelOrder(OrderManager orderManager, Order order) {
-		accountApi.cancel(order);
-		order = accountApi.updateOrderStatus(order);
+		account.cancel(order);
+		order = account.updateOrderStatus(order);
 		pendingOrders.remove(order.getOrderId());
 		orderManager.finalized(order);
 		logOrderStatus("Cancellation via order manager: ", order);
@@ -517,22 +541,38 @@ public class AccountManager implements ClientAccount, SimulatedAccountConfigurat
 	}
 
 
-	public synchronized void cancelStaleOrders() {
+	public synchronized void cancelStaleOrdersFor(Trader trader) {
 		if (pendingOrders.isEmpty()) {
 			return;
 		}
-		pendingOrders.forEach((id, order) -> {
+		for (Map.Entry<String, Order> entry : pendingOrders.entrySet()) {
+			Order order = entry.getValue();
 			OrderManager orderManager = orderManagers.getOrDefault(order.getSymbol(), DEFAULT_ORDER_MANAGER);
-			orderManager.cancelToReleaseFunds(order);
-			if (order.getStatus() == CANCELLED) {
-				cancelOrder(orderManager, order);
+			if (orderManager.cancelToReleaseFundsFor(order, trader)) {
+				order.cancel();
+				if (order.getStatus() == CANCELLED) {
+					cancelOrder(orderManager, order);
+					return;
+				}
 			}
-		});
+		}
 	}
 
-	public SimulatedAccountConfiguration resetBalances(){
+	public SimulatedAccountConfiguration resetBalances() {
 		this.balances.clear();
 		updateBalances();
 		return this;
+	}
+
+	public boolean updateOpenOrders(String symbol, Candle candle) {
+		return this.account.updateOpenOrders(symbol, candle);
+	}
+
+	public void updateOrderStatuses(String symbol) {
+		for(Order order : this.pendingOrders.values()){
+			if(symbol.equals(order.getSymbol())){
+				updateOrder(order);
+			}
+		}
 	}
 }

@@ -29,6 +29,10 @@ public class CHOP extends SingleValueCalculationIndicator {
 		this(14, 100, interval);
 	}
 
+	public CHOP(int length, TimeInterval interval) {
+		this(length, 100, interval);
+	}
+
 	public CHOP(int length, int scaleTo, TimeInterval interval) { //@param scaleTo maximum value to scale this oscillator, usually '1' or '100'
 		super(interval);
 		this.atrIndicator = new AverageTrueRange(1, interval); // ATR(1) = Average True Range (Period of 1)
@@ -41,9 +45,9 @@ public class CHOP extends SingleValueCalculationIndicator {
 
 	@Override
 	protected double calculate(Candle candle, double value, double previousValue, boolean updating) {
-		hvi.update(candle);
-		lvi.update(candle);
-		atrIndicator.update(candle);
+		hvi.accumulate(candle);
+		lvi.accumulate(candle);
+		atrIndicator.accumulate(candle);
 
 		if (updating) {
 			atrIndicators.update(this.atrIndicator.getValue());
